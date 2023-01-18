@@ -10,8 +10,9 @@ import SDWebImageSwiftUI
 
 struct ContentView: View {
     @StateObject var console = Console()
-    
     @State var bounds: CGSize? = nil
+
+    private var serverURL = "https://static.palera.in/rootless"
     
     var body: some View {
         GeometryReader { geo in
@@ -125,11 +126,55 @@ struct ContentView: View {
             strap()
         }
     }
+
+    private func deleteFile(file: String) -> Void {
+        let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+        let fileURL = documentsURL.appendingPathComponent(file)
+        try? FileManager.default.removeItem(at: fileURL)
+    }
+
+    private func downloadFile(file: String, tb: ToolbarStateMoment) -> Void {
+        console.log("[*] Downloading \(file)")
+        deleteFile(file: file)
+
+        let url = URL(string: "\(serverURL)/\(file)")!
+        let task = URLSession.shared.downloadTask(with: url) { location, response, error in
+        guard let location = location, error == nil else { return }
+            do {
+                let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+                let fileURL = documentsURL.appendingPathComponent(file)
+                try FileManager.default.moveItem(at: location, to: fileURL)
+                let tar = fileURL.path
+
+                DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+                    UIApplication.shared.perform(#selector(NSXPCConnection.suspend))
+                }
+            } catch {
+                console.error("[-] Failed to download \(file): \(error)")
+                NSLog("[palera1n] Failed to download \(file): \(error)")
+                tb.toolbarState = .closeApp
+            }
+        }
+        task.resume()
+    }
     
     private func strap() -> Void {
         let tb = ToolbarStateMoment.s
         tb.toolbarState = .disabled
-        
+         
+        guard let helper = Bundle.main.path(forAuxiliaryExecutable: "palera1nHelper") else {
+            let msg = "Could not find helper?"
+            console.error("[-] \(msg)")
+            tb.toolbarState = .closeApp
+            print("[palera1n] \(msg)")
+            return
+        }
+
+        downloadFile(file: "bootstrap.tar", tb: tb)
+        downloadFile(file: "sileo.deb", tb: tb)
+        downloadFile(file: "preferenceloader.deb", tb: tb)
+        downloadFile(file: "ellekit.deb", tb: tb)
+
         guard let tar = Bundle.main.path(forResource: "bootstrap", ofType: "tar") else {
             let msg = "Failed to find bootstrap"
             console.error("[-] \(msg)")
@@ -137,15 +182,7 @@ struct ContentView: View {
             print("[palera1n] \(msg)")
             return
         }
-         
-        guard let helper = Bundle.main.path(forAuxiliaryExecutable: "palera1nHelper") else {
-            let msg = "Could not find Helper"
-            console.error("[-] \(msg)")
-            tb.toolbarState = .closeApp
-            print("[palera1n] \(msg)")
-            return
-        }
-         
+
         guard let deb = Bundle.main.path(forResource: "sileo", ofType: "deb") else {
             let msg = "Could not find Sileo"
             console.error("[-] \(msg)")
@@ -154,16 +191,8 @@ struct ContentView: View {
             return
         }
         
-        guard let libswift = Bundle.main.path(forResource: "libswift", ofType: "deb") else {
-            let msg = "Could not find libswift deb"
-            console.error("[-] \(msg)")
-            tb.toolbarState = .closeApp
-            print("[palera1n] \(msg)")
-            return
-        }
-        
-        guard let safemode = Bundle.main.path(forResource: "safemode", ofType: "deb") else {
-            let msg = "Could not find safemode"
+        guard let ellekit = Bundle.main.path(forResource: "ellekit", ofType: "deb") else {
+            let msg = "Could not find ElleKit"
             console.error("[-] \(msg)")
             tb.toolbarState = .closeApp
             print("[palera1n] \(msg)")
@@ -171,15 +200,7 @@ struct ContentView: View {
         }
         
         guard let preferenceloader = Bundle.main.path(forResource: "preferenceloader", ofType: "deb") else {
-            let msg = "Could not find preferenceloader"
-            console.error("[-] \(msg)")
-            tb.toolbarState = .closeApp
-            print("[palera1n] \(msg)")
-            return
-        }
-        
-        guard let substitute = Bundle.main.path(forResource: "substitute", ofType: "deb") else {
-            let msg = "Could not find substitute"
+            let msg = "Could not find PreferenceLoader"
             console.error("[-] \(msg)")
             tb.toolbarState = .closeApp
             print("[palera1n] \(msg)")
@@ -188,12 +209,11 @@ struct ContentView: View {
         
         DispatchQueue.global(qos: .utility).async { [self] in
             spawn(command: "/sbin/mount", args: ["-uw", "/private/preboot"], root: true)
-            spawn(command: "/sbin/mount", args: ["-uw", "/"], root: true)
             
             let ret = spawn(command: helper, args: ["-i", tar], root: true)
             
-            spawn(command: "/usr/bin/chmod", args: ["4755", "/usr/bin/sudo"], root: true)
-            spawn(command: "/usr/bin/chown", args: ["root:wheel", "/usr/bin/sudo"], root: true)
+            spawn(command: "/var/jb/usr/bin/chmod", args: ["4755", "/var/jb/usr/bin/sudo"], root: true)
+            spawn(command: "/var/jb/usr/bin/chown", args: ["root:wheel", "/var/jb/usr/bin/sudo"], root: true)
             
             DispatchQueue.main.async {
                 if ret != 0 {
@@ -204,7 +224,7 @@ struct ContentView: View {
                 
                 console.log("[*] Preparing Bootstrap")
                 DispatchQueue.global(qos: .utility).async {
-                    let ret = spawn(command: "/usr/bin/sh", args: ["/prep_bootstrap.sh"], root: true)
+                    let ret = spawn(command: "/var/jb/usr/bin/sh", args: ["/var/jb/prep_bootstrap.sh"], root: true)
                     DispatchQueue.main.async {
                         if ret != 0 {
                             console.error("[-] Failed to prepare bootstrap. Status: \(ret)")
@@ -214,25 +234,25 @@ struct ContentView: View {
                         
                         console.log("[*] Installing packages")
                         DispatchQueue.global(qos: .utility).async {
-                            let ret = spawn(command: "/usr/bin/dpkg", args: ["-i", deb, libswift, safemode, preferenceloader, substitute], root: true)
+                            let ret = spawn(command: "/var/jb/usr/bin/dpkg", args: ["-i", deb, ellekit, preferenceloader], root: true)
                             DispatchQueue.main.async {
                                 if ret != 0 {
                                     console.error("[-] Failed to install packages. Status: \(ret)")
                                     tb.toolbarState = .closeApp
                                     return
                                 }
-                                
-                                console.log("[*] Registering Sileo in uicache")
+
+                                console.log("[*] Running uicache")
                                 DispatchQueue.global(qos: .utility).async {
-                                    let ret = spawn(command: "/usr/bin/uicache", args: ["-p", "/Applications/Sileo.app"], root: true)
+                                    let ret = spawn(command: "/var/jb/usr/bin/uicache", args: ["-a"], root: true)
                                     DispatchQueue.main.async {
                                         if ret != 0 {
                                             console.error("[-] Failed to uicache. Status: \(ret)")
                                             tb.toolbarState = .closeApp
                                             return
                                         }
+
                                         console.log("[*] Finished installing! Enjoy!")
-                                        
                                         tb.toolbarState = .respring
                                     }
                                 }
